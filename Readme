@@ -1,0 +1,24 @@
+
+### Backend README example
+```md
+# Imajin Backend
+
+Backend API for the Imajin capstone project.
+
+## Tech Stack
+- Node.js
+- Express
+- TypeScript
+- MySQL
+- JWT Authentication
+
+## Features
+- Authentication
+- OTP verification
+- Event management
+- Ticket and booking APIs
+
+## Run locally
+```bash
+npm install
+npm run dev
