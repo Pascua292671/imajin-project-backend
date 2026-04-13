@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
+import jwt, { Secret, SignOptions } from "jsonwebtoken";
 import z from "zod";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
@@ -8,6 +8,14 @@ import { OAuth2Client } from "google-auth-library";
 import { mysqlQuery } from "../utils/mysqlQuery";
 
 type UserRole = "customer" | "artist" | "sessionist" | "organizer";
+
+type AccessTokenPayload = {
+  id: number; // auth_accounts.id
+  user_id: number; // role table id
+  role: UserRole;
+  email: string;
+  username: string;
+};
 
 type AuthAccountRow = {
   id: number;
@@ -32,55 +40,75 @@ type NormalizedUser = {
   birthday: string | null;
 };
 
-const ACCESS_COOKIE_NAME = "accessToken";
+
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const isProduction = process.env.NODE_ENV === "production";
+
+const ACCESS_COOKIE_NAME = "accessToken";
+const ACCESS_COOKIE_MAX_AGE_MS = Number(
+  process.env.ACCESS_COOKIE_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000
+);
+
+const ACCESS_TOKEN_EXPIRES_IN: SignOptions["expiresIn"] =
+  (process.env.ACCESS_TOKEN_EXPIRES_IN as SignOptions["expiresIn"]) ?? "7d";
 
 /* =========================
-   HELPERS
+   CORE HELPERS
 ========================= */
 
-function generateOtpCode() {
+function getJwtSecret(): Secret {
+  const secret = process.env.JWT_SECRET;
+
+  if (!secret || !secret.trim()) {
+    throw new Error("JWT_SECRET is missing");
+  }
+
+  return secret;
+}
+
+function generateOtpCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-function sha256(input: string) {
+function sha256(input: string): string {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
 function signAccessToken(user: {
-  id?: number;
+  id: number;
   role: UserRole;
   user_id: number;
   email: string;
   username: string;
-}) {
-  return jwt.sign(
-    {
-      id: Number(user.id ?? user.user_id),
-      user_id: Number(user.user_id),
-      role: user.role,
-      email: user.email,
-      username: user.username,
-    },
-    process.env.JWT_SECRET as string,
-    { expiresIn: "1d" },
-  );
-}
-function setAuthCookie(res: Response, token: string) {
-  res.cookie(ACCESS_COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 1000 * 60 * 60 * 24,
+}): string {
+  const payload: AccessTokenPayload = {
+    id: Number(user.id),
+    user_id: Number(user.user_id),
+    role: user.role,
+    email: user.email,
+    username: user.username,
+  };
+
+  return jwt.sign(payload, getJwtSecret(), {
+    expiresIn: ACCESS_TOKEN_EXPIRES_IN,
   });
 }
 
-function clearAuthCookie(res: Response) {
+function setAuthCookie(res: Response, token: string): void {
+  res.cookie(ACCESS_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: isProduction ? "none" : "lax",
+    secure: isProduction,
+    path: "/",
+    maxAge: ACCESS_COOKIE_MAX_AGE_MS,
+  });
+}
+
+function clearAuthCookie(res: Response): void {
   res.clearCookie(ACCESS_COOKIE_NAME, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    sameSite: isProduction ? "none" : "lax",
+    secure: isProduction,
     path: "/",
   });
 }
@@ -105,29 +133,35 @@ function getTransporter() {
   });
 }
 
+/* =========================
+   DB HELPERS
+========================= */
+
 async function getAuthAccountByEmail(
-  email: string,
+  email: string
 ): Promise<AuthAccountRow | null> {
   const rows = await mysqlQuery<AuthAccountRow[]>(
     `SELECT * FROM auth_accounts WHERE email = ? LIMIT 1`,
-    [email.toLowerCase()],
+    [email.toLowerCase()]
   );
+
   return rows?.[0] ?? null;
 }
 
 async function getAuthAccountByUsername(
-  username: string,
+  username: string
 ): Promise<AuthAccountRow | null> {
   const rows = await mysqlQuery<AuthAccountRow[]>(
     `SELECT * FROM auth_accounts WHERE LOWER(username) = ? LIMIT 1`,
-    [username.toLowerCase()],
+    [username.toLowerCase()]
   );
+
   return rows?.[0] ?? null;
 }
 
 async function getNormalizedUserByRoleAndId(
   role: UserRole,
-  userId: number,
+  userId: number
 ): Promise<NormalizedUser | null> {
   if (role === "customer") {
     const rows = await mysqlQuery<any[]>(
@@ -146,7 +180,7 @@ async function getNormalizedUserByRoleAndId(
       WHERE id = ?
       LIMIT 1
       `,
-      [userId],
+      [userId]
     );
 
     if (!rows.length) return null;
@@ -182,7 +216,7 @@ async function getNormalizedUserByRoleAndId(
       WHERE id = ?
       LIMIT 1
       `,
-      [userId],
+      [userId]
     );
 
     if (!rows.length) return null;
@@ -218,7 +252,7 @@ async function getNormalizedUserByRoleAndId(
       WHERE id = ?
       LIMIT 1
       `,
-      [userId],
+      [userId]
     );
 
     if (!rows.length) return null;
@@ -253,7 +287,7 @@ async function getNormalizedUserByRoleAndId(
     WHERE id = ?
     LIMIT 1
     `,
-    [userId],
+    [userId]
   );
 
   if (!rows.length) return null;
@@ -273,31 +307,33 @@ async function getNormalizedUserByRoleAndId(
 }
 
 async function getNormalizedUserByEmail(
-  email: string,
+  email: string
 ): Promise<NormalizedUser | null> {
   const auth = await getAuthAccountByEmail(email);
   if (!auth) return null;
+
   return getNormalizedUserByRoleAndId(auth.role, Number(auth.user_id));
 }
 
 async function getNormalizedUserByUsername(
-  username: string,
+  username: string
 ): Promise<NormalizedUser | null> {
   const auth = await getAuthAccountByUsername(username);
   if (!auth) return null;
+
   return getNormalizedUserByRoleAndId(auth.role, Number(auth.user_id));
 }
 
-async function assertUsernameAvailable(username: string) {
-  const uname = String(username || "")
-    .trim()
-    .toLowerCase();
+async function assertUsernameAvailable(username: string): Promise<string> {
+  const uname = String(username || "").trim().toLowerCase();
 
-  if (!uname) throw new Error("username is required");
+  if (!uname) {
+    throw new Error("username is required");
+  }
 
   if (!/^[a-zA-Z0-9._-]{3,50}$/.test(uname)) {
     throw new Error(
-      "Invalid username format. Use 3-50 chars: letters, numbers, dot, underscore, dash.",
+      "Invalid username format. Use 3-50 chars: letters, numbers, dot, underscore, dash."
     );
   }
 
@@ -344,7 +380,7 @@ async function upsertAuthAccount(params: {
       username.toLowerCase(),
       google_sub,
       email_verified,
-    ],
+    ]
   );
 }
 
@@ -355,70 +391,11 @@ async function markEmailVerified(email: string) {
     SET email_verified = 1
     WHERE email = ?
     `,
-    [email.toLowerCase()],
+    [email.toLowerCase()]
   );
 }
 
-async function createAndSendEmailOtp(email: string) {
-  console.log("[OTP] start for:", email);
 
-  const transporter = getTransporter();
-
-  const recent = await mysqlQuery<any[]>(
-    `
-    SELECT id
-    FROM email_otps
-    WHERE email = ?
-      AND created_at > (NOW() - INTERVAL 60 SECOND)
-    ORDER BY id DESC
-    LIMIT 1
-    `,
-    [email],
-  );
-
-  console.log("[OTP] recent count:", recent.length);
-
-  if (recent.length) {
-    throw new Error(
-      "OTP recently sent. Please wait a bit before requesting again.",
-    );
-  }
-
-  await mysqlQuery(
-    `
-    UPDATE email_otps
-    SET consumed_at = NOW()
-    WHERE email = ?
-      AND consumed_at IS NULL
-      AND expires_at > NOW()
-    `,
-    [email],
-  );
-
-  console.log("[OTP] previous active OTPs consumed");
-
-  const code = generateOtpCode();
-  const codeHash = sha256(code);
-
-  await mysqlQuery(
-    `
-    INSERT INTO email_otps (email, code_hash, expires_at)
-    VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 10 MINUTE))
-    `,
-    [email, codeHash],
-  );
-
-  console.log("[OTP] new OTP inserted");
-
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM,
-    to: email,
-    subject: "Your OTP Code",
-    text: `Your OTP code is: ${code}\nThis code expires in 10 minutes.`,
-  });
-
-  console.log("[OTP] email sent successfully");
-}
 
 async function createRoleUser(params: {
   role: UserRole;
@@ -458,8 +435,9 @@ async function createRoleUser(params: {
         address,
         String(age),
         birthday,
-      ],
+      ]
     );
+
     return Number(result.insertId);
   }
 
@@ -479,8 +457,9 @@ async function createRoleUser(params: {
         address,
         Number(age),
         birthday,
-      ],
+      ]
     );
+
     return Number(result.insertId);
   }
 
@@ -500,8 +479,9 @@ async function createRoleUser(params: {
         address,
         Number(age),
         birthday,
-      ],
+      ]
     );
+
     return Number(result.insertId);
   }
 
@@ -519,8 +499,9 @@ async function createRoleUser(params: {
       address,
       Number(age),
       birthday,
-    ],
+    ]
   );
+
   return Number(result.insertId);
 }
 
@@ -541,9 +522,7 @@ export const loginSchema = z
 
 export async function checkUsernameAvailability(req: Request, res: Response) {
   try {
-    const raw = String(req.query.username || "")
-      .trim()
-      .toLowerCase();
+    const raw = String(req.query.username || "").trim().toLowerCase();
 
     if (!raw) {
       return res.status(400).json({
@@ -579,33 +558,182 @@ export async function checkUsernameAvailability(req: Request, res: Response) {
    REQUEST OTP
 ========================= */
 
+/* async function createAndSendEmailOtp(email: string): Promise<void> {
+  const normalizedEmail = email.toLowerCase();
+  const otp = generateOtpCode();
+  const otpHash = sha256(otp);
+
+  const recentRows = await mysqlQuery<any[]>(
+    `
+    SELECT id, created_at
+    FROM email_otps
+    WHERE email = ?
+      AND consumed_at IS NULL
+      AND expires_at > NOW()
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [normalizedEmail]
+  );
+
+  if (recentRows.length) {
+    const latest = recentRows[0];
+    const createdAt = new Date(latest.created_at).getTime();
+    const now = Date.now();
+    const secondsSinceLastSend = Math.floor((now - createdAt) / 1000);
+
+    if (secondsSinceLastSend < 60) {
+      throw new Error(
+        `OTP recently sent. Please wait ${60 - secondsSinceLastSend} seconds before requesting again.`
+      );
+    }
+  }
+
+  await mysqlQuery(
+    `
+    INSERT INTO email_otps (
+      email,
+      code_hash,
+      expires_at,
+      consumed_at,
+      created_at
+    )
+    VALUES (
+      ?,
+      ?,
+      DATE_ADD(NOW(), INTERVAL 10 MINUTE),
+      NULL,
+      NOW()
+    )
+    `,
+    [normalizedEmail, otpHash]
+  );
+
+  const transporter = getTransporter();
+
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM,
+    to: normalizedEmail,
+    subject: "Your OTP Code",
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2>Email Verification</h2>
+        <p>Your OTP code is:</p>
+        <h1 style="letter-spacing: 4px;">${otp}</h1>
+        <p>This code will expire in 10 minutes.</p>
+      </div>
+    `,
+  });
+} */
+async function createAndSendEmailOtp(email: string): Promise<void> {
+  const normalizedEmail = email.toLowerCase();
+  const otp = generateOtpCode();
+  const otpHash = sha256(otp);
+
+  const recentRows = await mysqlQuery<any[]>(
+    `
+    SELECT id, created_at
+    FROM email_otps
+    WHERE email = ?
+      AND purpose = 'email_verification'
+      AND consumed_at IS NULL
+      AND expires_at > NOW()
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [normalizedEmail]
+  );
+
+  if (recentRows.length) {
+    const latest = recentRows[0];
+    const createdAt = new Date(latest.created_at).getTime();
+    const now = Date.now();
+    const secondsSinceLastSend = Math.floor((now - createdAt) / 1000);
+
+    if (secondsSinceLastSend < 60) {
+      throw new Error(
+        `OTP recently sent. Please wait ${60 - secondsSinceLastSend} seconds before requesting again.`
+      );
+    }
+  }
+
+  await mysqlQuery(
+    `
+    INSERT INTO email_otps (
+      email,
+      purpose,
+      code_hash,
+      expires_at,
+      consumed_at,
+      created_at
+    )
+    VALUES (
+      ?,
+      'email_verification',
+      ?,
+      DATE_ADD(NOW(), INTERVAL 10 MINUTE),
+      NULL,
+      NOW()
+    )
+    `,
+    [normalizedEmail, otpHash]
+  );
+
+  const transporter = getTransporter();
+
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM,
+    to: normalizedEmail,
+    subject: "Your OTP Code",
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2>Email Verification</h2>
+        <p>Your OTP code is:</p>
+        <h1 style="letter-spacing: 4px;">${otp}</h1>
+        <p>This code will expire in 10 minutes.</p>
+      </div>
+    `,
+  });
+}
+
 export const requestEmailOtp = async (req: Request, res: Response) => {
   try {
     const schema = z.object({ email: z.string().email() }).strict();
     const { email } = schema.parse(req.body);
 
-    const user = await getNormalizedUserByEmail(email.toLowerCase());
+    const normalizedEmail = email.toLowerCase();
+    const user = await getNormalizedUserByEmail(normalizedEmail);
+
     if (!user) {
-      return res
-        .status(404)
-        .json({ message: "No account found for this email." });
+      return res.status(404).json({
+        message: "No account found for this email.",
+      });
     }
 
-    await createAndSendEmailOtp(user.email);
-    return res.json({ message: "OTP sent to email." });
+    await createAndSendEmailOtp(normalizedEmail);
+
+    return res.json({
+      message: "OTP sent to email.",
+    });
   } catch (err: any) {
     if (err?.message?.includes("OTP recently sent")) {
-      return res.status(429).json({ message: err.message });
+      return res.status(429).json({
+        message: err.message,
+      });
     }
+
     if (err?.name === "ZodError") {
-      return res
-        .status(400)
-        .json({ message: "Invalid request body", error: err.errors });
+      return res.status(400).json({
+        message: "Invalid request body",
+        error: err.errors,
+      });
     }
+
     console.error("requestEmailOtp error:", err);
-    return res
-      .status(500)
-      .json({ message: "Failed to send OTP", error: err?.message });
+    return res.status(500).json({
+      message: "Failed to send OTP",
+      error: err?.message ?? "Unknown error",
+    });
   }
 };
 
@@ -623,6 +751,7 @@ export const verifyEmailOtp = async (req: Request, res: Response) => {
       .strict();
 
     const { email, code } = schema.parse(req.body);
+    const normalizedEmail = email.trim().toLowerCase();
 
     const rows = await mysqlQuery<any[]>(
       `
@@ -634,44 +763,59 @@ export const verifyEmailOtp = async (req: Request, res: Response) => {
       ORDER BY id DESC
       LIMIT 1
       `,
-      [email.toLowerCase()],
+      [normalizedEmail]
     );
 
     if (!rows.length) {
-      return res
-        .status(400)
-        .json({ message: "OTP expired or not found. Request a new OTP." });
+      return res.status(400).json({
+        message: "OTP expired or not found. Request a new OTP.",
+      });
     }
 
     const otpRow = rows[0];
 
     if (sha256(code) !== otpRow.code_hash) {
-      return res.status(401).json({ message: "Invalid OTP code." });
+      return res.status(401).json({
+        message: "Invalid OTP code.",
+      });
     }
 
-    await mysqlQuery(`UPDATE email_otps SET consumed_at = NOW() WHERE id = ?`, [
-      otpRow.id,
-    ]);
-
-    await markEmailVerified(email.toLowerCase());
-
-    const auth = await getAuthAccountByEmail(email.toLowerCase());
-    if (!auth) {
-      return res.status(404).json({ message: "Auth account not found." });
-    }
-
-    const user = await getNormalizedUserByRoleAndId(
-      auth.role,
-      Number(auth.user_id),
+    await mysqlQuery(
+      `
+      UPDATE email_otps
+      SET consumed_at = NOW()
+      WHERE id = ?
+      `,
+      [otpRow.id]
     );
+
+    await markEmailVerified(normalizedEmail);
+
+    const auth = await getAuthAccountByEmail(normalizedEmail);
+    if (!auth) {
+      return res.status(404).json({
+        message: "Auth account not found.",
+      });
+    }
+
+    const roleUserId = Number(auth.user_id);
+    if (!Number.isFinite(roleUserId)) {
+      return res.status(500).json({
+        message: "Invalid auth account user_id.",
+      });
+    }
+
+    const user = await getNormalizedUserByRoleAndId(auth.role, roleUserId);
     if (!user) {
-      return res.status(404).json({ message: "User record not found." });
+      return res.status(404).json({
+        message: "User record not found.",
+      });
     }
 
     const token = signAccessToken({
-      id: Number(auth.user_id),
+      id: Number(auth.id),
+      user_id: roleUserId,
       role: auth.role,
-      user_id: Number(auth.user_id),
       email: auth.email,
       username: auth.username,
     });
@@ -681,25 +825,28 @@ export const verifyEmailOtp = async (req: Request, res: Response) => {
     return res.status(200).json({
       message: "OTP verified successfully",
       user: {
-        id: user.id,
+        id: Number(auth.id),
+        user_id: roleUserId,
         role: auth.role,
-        user_id: Number(auth.user_id),
         email: auth.email,
         username: auth.username,
-        fullName: user.fullName,
+        email_verified: Boolean(auth.email_verified || 1),
+        fullName: user.fullName ?? null,
       },
-      token,
     });
   } catch (err: any) {
     if (err?.name === "ZodError") {
-      return res
-        .status(400)
-        .json({ message: "Invalid request body", error: err.errors });
+      return res.status(400).json({
+        message: "Invalid request body",
+        error: err.errors,
+      });
     }
+
     console.error("verifyEmailOtp error:", err);
-    return res
-      .status(500)
-      .json({ message: "OTP verification failed", error: err?.message });
+    return res.status(500).json({
+      message: "OTP verification failed",
+      error: err?.message ?? "Unknown error",
+    });
   }
 };
 
@@ -710,25 +857,45 @@ export const verifyEmailOtp = async (req: Request, res: Response) => {
 export const me = async (req: Request, res: Response) => {
   try {
     if (!req.user) {
-      return res.status(401).json({ message: "Not authenticated" });
+      return res.status(401).json({
+        message: "Not authenticated",
+      });
     }
 
-    const user = await getNormalizedUserByRoleAndId(
-      req.user.role,
-      Number(req.user.user_id),
+    const authRows = await mysqlQuery<AuthAccountRow[]>(
+      `
+      SELECT id, email, role, user_id, username, google_sub, email_verified
+      FROM auth_accounts
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [(req.user as AccessTokenPayload).id]
     );
 
+    if (!authRows.length) {
+      return res.status(404).json({
+        message: "Authenticated user not found",
+      });
+    }
+
+    const auth = authRows[0];
+    const roleUserId = Number(auth.user_id);
+
+    const user = await getNormalizedUserByRoleAndId(auth.role, roleUserId);
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({
+        message: "User not found",
+      });
     }
 
     return res.status(200).json({
       user: {
-        id: user.id,
-        role: req.user.role,
-        user_id: req.user.user_id,
-        email: req.user.email,
-        username: req.user.username,
+        id: Number(auth.id),
+        user_id: roleUserId,
+        role: auth.role,
+        email: auth.email,
+        username: auth.username,
+        email_verified: Boolean(auth.email_verified),
         fullName: user.fullName,
         phone_no: user.phone_no,
         address: user.address,
@@ -740,7 +907,7 @@ export const me = async (req: Request, res: Response) => {
     console.error("me error:", err);
     return res.status(500).json({
       message: "Failed to fetch current user",
-      error: err?.message,
+      error: err?.message ?? "Unknown error",
     });
   }
 };
@@ -754,16 +921,14 @@ export const registerUser = async (req: Request, res: Response) => {
     const body = req.body as any;
 
     const role = String(body.role || "").toLowerCase() as UserRole;
-    const email = String(body.email || "")
-      .trim()
-      .toLowerCase();
+    const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
     const phone = String(
-      body.phone_no ?? body.contactNum ?? body.phoneNumber ?? "",
+      body.phone_no ?? body.contactNum ?? body.phoneNumber ?? ""
     ).trim();
     const address = String(body.address ?? body.adress ?? "").trim();
     const birthday = String(
-      body.Birthday ?? body.birth_date ?? body.birthday ?? "",
+      body.Birthday ?? body.birth_date ?? body.birthday ?? ""
     ).trim();
     const age = body.age;
     const usernameRaw = String(body.username || "").trim();
@@ -773,31 +938,38 @@ export const registerUser = async (req: Request, res: Response) => {
     const organization_rep = String(body.organization_rep || "").trim();
 
     if (!["customer", "artist", "sessionist", "organizer"].includes(role)) {
-      return res.status(400).json({ message: "Invalid role" });
+      return res.status(400).json({
+        message: "Invalid role",
+      });
     }
 
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "email and password are required" });
+      return res.status(400).json({
+        message: "email and password are required",
+      });
     }
 
     if (!usernameRaw) {
-      return res.status(400).json({ message: "username is required" });
+      return res.status(400).json({
+        message: "username is required",
+      });
     }
 
     let username: string;
+
     try {
       username = await assertUsernameAvailable(usernameRaw);
     } catch (e: any) {
-      return res
-        .status(409)
-        .json({ message: e.message || "Username already exists" });
+      return res.status(409).json({
+        message: e.message || "Username already exists",
+      });
     }
 
     const existingEmail = await getAuthAccountByEmail(email);
     if (existingEmail) {
-      return res.status(409).json({ message: "Email already exists" });
+      return res.status(409).json({
+        message: "Email already exists",
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -806,36 +978,36 @@ export const registerUser = async (req: Request, res: Response) => {
 
     if (role === "customer") {
       if (!name || !phone || !address || age == null || !birthday) {
-        return res
-          .status(400)
-          .json({ message: "Missing required Customer fields" });
+        return res.status(400).json({
+          message: "Missing required Customer fields",
+        });
       }
       fullName = name;
     }
 
     if (role === "artist") {
       if (!full_name || !phone || !address || age == null || !birthday) {
-        return res
-          .status(400)
-          .json({ message: "Missing required Artist fields" });
+        return res.status(400).json({
+          message: "Missing required Artist fields",
+        });
       }
       fullName = full_name;
     }
 
     if (role === "sessionist") {
       if (!full_name || !phone || !address || age == null || !birthday) {
-        return res
-          .status(400)
-          .json({ message: "Missing required Sessionist fields" });
+        return res.status(400).json({
+          message: "Missing required Sessionist fields",
+        });
       }
       fullName = full_name;
     }
 
     if (role === "organizer") {
       if (!organization_rep || !phone || !address || age == null || !birthday) {
-        return res
-          .status(400)
-          .json({ message: "Missing required Organizer fields" });
+        return res.status(400).json({
+          message: "Missing required Organizer fields",
+        });
       }
       fullName = organization_rep;
     }
@@ -873,13 +1045,18 @@ export const registerUser = async (req: Request, res: Response) => {
         message: "Duplicate entry. Email/username already exists.",
       });
     }
+
     if (err?.message?.includes("OTP recently sent")) {
-      return res.status(429).json({ message: err.message });
+      return res.status(429).json({
+        message: err.message,
+      });
     }
+
     console.error("Register error:", err);
-    return res
-      .status(500)
-      .json({ message: "Register failed", error: err?.message });
+    return res.status(500).json({
+      message: "Register failed",
+      error: err?.message ?? "Unknown error",
+    });
   }
 };
 
@@ -887,77 +1064,67 @@ export const registerUser = async (req: Request, res: Response) => {
    LOGIN / LOGOUT
 ========================= */
 
-/* export const logoutUser = async (_req: Request, res: Response) => {
-  clearAuthCookie(res);
-  return res.status(200).json({ message: "Logged out" });
-}; */
-
-
-/* export const logoutUser = async (_req: Request, res: Response) => {
-  try {
-    const isProduction = process.env.NODE_ENV === "production";
-
-    res.clearCookie("accessToken", {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
-      path: "/",
-    });
-
-    res.clearCookie("refreshToken", {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
-      path: "/",
-    });
-
-    return res.status(200).json({
-      message: "Logged out successfully",
-    });
-  } catch (error: any) {
-    console.error("Logout failed:", error);
-    return res.status(500).json({
-      message: "Logout failed",
-      error: error?.message || "Unknown error",
-    });
-  }
-}; */
-
- export const loginUser = async (req: Request, res: Response) => {
+export const loginUser = async (req: Request, res: Response) => {
   try {
     const { username, password } = loginSchema.parse(req.body);
-    const uname = String(username || "")
-      .trim()
-      .toLowerCase();
+    const normalizedUsername = String(username).trim().toLowerCase();
 
-    const user = await getNormalizedUserByUsername(uname);
+    const auth = await getAuthAccountByUsername(normalizedUsername);
+    if (!auth) {
+      return res.status(401).json({
+        message: "Invalid username or password",
+      });
+    }
+
+    const roleUserId = Number(auth.user_id);
+    if (!Number.isFinite(roleUserId)) {
+      return res.status(500).json({
+        message: "Invalid auth account mapping",
+      });
+    }
+
+    const user = await getNormalizedUserByRoleAndId(auth.role, roleUserId);
+
     if (!user || !user.password) {
-      return res.status(401).json({ message: "Invalid username or password" });
+      return res.status(401).json({
+        message: "Invalid username or password",
+      });
     }
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ message: "Invalid username or password" });
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        message: "Invalid username or password",
+      });
     }
 
-    await createAndSendEmailOtp(user.email);
+    await createAndSendEmailOtp(auth.email);
 
     return res.status(202).json({
-      message: "OTP sent. Please verify to complete login.",
+      message: "OTP sent to your email",
       requiresOtp: true,
-      email: user.email,
+      email: auth.email,
+      username: auth.username,
     });
-  } catch (e: any) {
-    if (e?.name === "ZodError") {
-      return res
-        .status(400)
-        .json({ message: "Invalid request body", error: e.errors });
+  } catch (err: any) {
+    if (err?.name === "ZodError") {
+      return res.status(400).json({
+        message: "Invalid request body",
+        error: err.errors,
+      });
     }
-    if (e?.message?.includes("OTP recently sent")) {
-      return res.status(429).json({ message: e.message });
+
+    if (err?.message?.includes("OTP recently sent")) {
+      return res.status(429).json({
+        message: err.message,
+      });
     }
-    console.error("Login failed:", e);
-    return res.status(500).json({ message: "Login failed", error: e.message });
+
+    console.error("loginUser error:", err);
+    return res.status(500).json({
+      message: "Login failed",
+      error: err?.message ?? "Unknown error",
+    });
   }
 };
 
@@ -965,30 +1132,17 @@ export const logoutUser = async (_req: Request, res: Response) => {
   try {
     clearAuthCookie(res);
 
-    // optional if may refresh token ka talaga
-    res.clearCookie("refreshToken", {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-    });
-
     return res.status(200).json({
       message: "Logged out successfully",
     });
   } catch (error: any) {
-    console.error("Logout failed:", error);
+    console.error("logoutUser error:", error);
     return res.status(500).json({
       message: "Logout failed",
-      error: error?.message || "Unknown error",
+      error: error?.message ?? "Unknown error",
     });
   }
 };
-
-
-
-
-
 
 /* =========================
    GOOGLE AUTH
@@ -1012,7 +1166,9 @@ export const googleAuth = async (req: Request, res: Response) => {
     const payload = ticket.getPayload();
 
     if (!payload?.email || !payload?.sub) {
-      return res.status(401).json({ message: "Invalid Google token." });
+      return res.status(401).json({
+        message: "Invalid Google token.",
+      });
     }
 
     const email = payload.email.toLowerCase();
@@ -1040,8 +1196,9 @@ export const googleAuth = async (req: Request, res: Response) => {
 
     const user = await getNormalizedUserByRoleAndId(
       auth.role,
-      Number(auth.user_id),
+      Number(auth.user_id)
     );
+
     if (!user) {
       return res.status(404).json({
         message: "Linked role account not found.",
@@ -1059,17 +1216,23 @@ export const googleAuth = async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     if (err?.name === "ZodError") {
-      return res
-        .status(400)
-        .json({ message: "Invalid request body", error: err.errors });
+      return res.status(400).json({
+        message: "Invalid request body",
+        error: err.errors,
+      });
     }
+
     if (err?.message?.includes("OTP recently sent")) {
-      return res.status(429).json({ message: err.message });
+      return res.status(429).json({
+        message: err.message,
+      });
     }
+
     console.error("googleAuth error:", err);
-    return res
-      .status(500)
-      .json({ message: "Google auth failed", error: err?.message });
+    return res.status(500).json({
+      message: "Google auth failed",
+      error: err?.message ?? "Unknown error",
+    });
   }
 };
 
@@ -1084,29 +1247,22 @@ export const googlePassportCallback = async (req: Request, res: Response) => {
       googleSub?: string;
     };
 
-    console.log("[GOOGLE CALLBACK] raw req.user:", rawUser);
-
     const email = rawUser?.email ?? null;
     const googleSub = rawUser?.googleSub ?? null;
 
     if (!email || !googleSub) {
-      console.error("[GOOGLE CALLBACK] Missing email or googleSub");
       return res.redirect("http://localhost:3000/login?google=invalid");
     }
 
     const normalizedEmail = email.toLowerCase();
 
-    console.log("[GOOGLE CALLBACK] normalized email:", normalizedEmail);
-
     const auth = await getAuthAccountByEmail(normalizedEmail);
-    console.log("[GOOGLE CALLBACK] auth lookup:", auth);
 
     if (!auth) {
-      console.log("[GOOGLE CALLBACK] redirect → no account");
       return res.redirect(
         `http://localhost:3000/login?google=no-account&email=${encodeURIComponent(
-          normalizedEmail,
-        )}`,
+          normalizedEmail
+        )}`
       );
     }
 
@@ -1119,26 +1275,20 @@ export const googlePassportCallback = async (req: Request, res: Response) => {
       email_verified: 1,
     });
 
-    console.log("[GOOGLE CALLBACK] auth updated with google_sub");
-
     try {
       await createAndSendEmailOtp(auth.email);
-      console.log("[GOOGLE CALLBACK] OTP sent");
     } catch (otpError: any) {
-      const msg = String(otpError?.message || "");
+      const message = String(otpError?.message || "");
 
-      if (!msg.toLowerCase().includes("otp recently sent")) {
-        console.error("[GOOGLE CALLBACK] OTP error:", otpError);
+      if (!message.toLowerCase().includes("otp recently sent")) {
         throw otpError;
       }
-
-      console.warn("[GOOGLE CALLBACK] OTP cooldown hit, continue login");
     }
 
-    console.log("[GOOGLE CALLBACK] redirecting to /otp");
-
     return res.redirect(
-      `http://localhost:3000/otp?email=${encodeURIComponent(auth.email)}&google=1`,
+      `http://localhost:3000/otp?email=${encodeURIComponent(
+        auth.email
+      )}&google=1`
     );
   } catch (err) {
     console.error("googlePassportCallback error:", err);
@@ -1146,28 +1296,177 @@ export const googlePassportCallback = async (req: Request, res: Response) => {
   }
 };
 
-export const requestPasswordResetOtp = async (req: Request, res: Response) => {
+/* =========================
+   PASSWORD RESET
+========================= */
+/* =========================
+   PASSWORD RESET
+========================= */
+
+interface EmailOtpRow {
+  id: number;
+  email: string;
+  purpose: string;
+  code_hash: string;
+  expires_at: string;
+  consumed_at: string | null;
+  created_at: string;
+}
+
+function maskEmail(email: string): string {
+  const [local, domain] = String(email || "").split("@");
+
+  if (!local || !domain) return "hidden";
+
+  if (local.length <= 2) {
+    return `${local[0] || "*"}*@${domain}`;
+  }
+
+  return `${local.slice(0, 2)}${"*".repeat(
+    Math.max(local.length - 2, 3)
+  )}@${domain}`;
+}
+
+async function getAuthAccountByIdentifier(
+  identifier: string
+): Promise<AuthAccountRow | null> {
+  const value = String(identifier || "").trim().toLowerCase();
+
+  const rows = await mysqlQuery<AuthAccountRow[]>(
+    `
+    SELECT id, email, role, user_id, username, google_sub, email_verified
+    FROM auth_accounts
+    WHERE LOWER(username) = ? OR LOWER(email) = ?
+    LIMIT 1
+    `,
+    [value, value]
+  );
+
+  return rows?.[0] ?? null;
+}
+
+async function createAndSendPasswordResetOtp(email: string): Promise<void> {
+  const normalizedEmail = email.toLowerCase();
+  const otp = generateOtpCode();
+  const otpHash = sha256(otp);
+
+  await mysqlQuery(
+    `
+    UPDATE email_otps
+    SET consumed_at = NOW()
+    WHERE email = ?
+      AND purpose = 'forgot_password'
+      AND consumed_at IS NULL
+    `,
+    [normalizedEmail]
+  );
+
+  await mysqlQuery(
+    `
+    INSERT INTO email_otps (
+      email,
+      purpose,
+      code_hash,
+      expires_at,
+      consumed_at,
+      created_at
+    )
+    VALUES (
+      ?,
+      'forgot_password',
+      ?,
+      DATE_ADD(NOW(), INTERVAL 10 MINUTE),
+      NULL,
+      NOW()
+    )
+    `,
+    [normalizedEmail, otpHash]
+  );
+
+  const transporter = getTransporter();
+
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM,
+    to: normalizedEmail,
+    subject: "Password Reset OTP",
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2>Password Reset Request</h2>
+        <p>Your password reset OTP is:</p>
+        <h1 style="letter-spacing: 4px;">${otp}</h1>
+        <p>This code will expire in 10 minutes.</p>
+      </div>
+    `,
+  });
+}
+
+export const getPasswordResetAccount = async (req: Request, res: Response) => {
   try {
-    const schema = z.object({
-      email: z.string().email(),
-    }).strict();
+    const identifier = String(
+      req.query.username ?? req.query.identifier ?? ""
+    ).trim();
 
-    const { email } = schema.parse(req.body);
-    const normalizedEmail = email.toLowerCase();
-
-    const user = await getNormalizedUserByEmail(normalizedEmail);
-
-    if (!user) {
-      return res.status(404).json({
-        message: "No account found for this email.",
+    if (!identifier) {
+      return res.status(400).json({
+        ok: false,
+        message: "Username is required",
       });
     }
 
-    await createAndSendEmailOtp(normalizedEmail);
+    const auth = await getAuthAccountByIdentifier(identifier);
+
+    if (!auth) {
+      return res.status(404).json({
+        ok: false,
+        message: "Account not found.",
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Account found.",
+      data: {
+        username: auth.username,
+        emailMasked: maskEmail(auth.email),
+      },
+    });
+  } catch (err: any) {
+    console.error("getPasswordResetAccount error:", err);
+    return res.status(500).json({
+      ok: false,
+      message: "Failed to check account",
+      error: err?.message ?? "Unknown error",
+    });
+  }
+};
+
+export const requestPasswordResetOtp = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const schema = z.object({
+      username: z.string().min(1),
+    });
+
+    const parsed = schema.parse(req.body);
+
+    const auth = await getAuthAccountByIdentifier(parsed.username);
+
+    if (!auth) {
+      return res.status(404).json({
+        message: "Account not found.",
+      });
+    }
+
+    await createAndSendPasswordResetOtp(auth.email.toLowerCase());
 
     return res.status(200).json({
       message: "Password reset OTP sent to email.",
-      email: normalizedEmail,
+      data: {
+        username: auth.username,
+        emailMasked: maskEmail(auth.email),
+      },
     });
   } catch (err: any) {
     if (err?.name === "ZodError") {
@@ -1177,56 +1476,64 @@ export const requestPasswordResetOtp = async (req: Request, res: Response) => {
       });
     }
 
-    if (err?.message?.includes("OTP recently sent")) {
-      return res.status(429).json({ message: err.message });
-    }
-
     console.error("requestPasswordResetOtp error:", err);
     return res.status(500).json({
       message: "Failed to send reset OTP",
-      error: err?.message,
+      error: err?.message ?? "Unknown error",
     });
   }
 };
 
-// verify reset OTP only
-export const verifyPasswordResetOtp = async (req: Request, res: Response) => {
+export const verifyPasswordResetOtp = async (
+  req: Request,
+  res: Response
+) => {
   try {
     const schema = z.object({
-      email: z.string().email(),
+      username: z.string().min(1),
       code: z.string().length(6),
-    }).strict();
+    });
 
-    const { email, code } = schema.parse(req.body);
-    const normalizedEmail = email.toLowerCase();
+    const parsed = schema.parse(req.body);
 
-    const rows = await mysqlQuery<any[]>(
+    const auth = await getAuthAccountByIdentifier(parsed.username);
+
+    if (!auth) {
+      return res.status(404).json({
+        message: "Account not found.",
+      });
+    }
+
+    const normalizedEmail = auth.email.toLowerCase();
+    const otpHash = sha256(parsed.code);
+
+    const rows = await mysqlQuery<EmailOtpRow[]>(
       `
-      SELECT *
+      SELECT id, email, purpose, code_hash, expires_at, consumed_at, created_at
       FROM email_otps
       WHERE email = ?
+        AND purpose = 'forgot_password'
+        AND code_hash = ?
         AND consumed_at IS NULL
         AND expires_at > NOW()
       ORDER BY id DESC
       LIMIT 1
       `,
-      [normalizedEmail]
+      [normalizedEmail, otpHash]
     );
 
     if (!rows.length) {
       return res.status(400).json({
-        message: "OTP expired or not found. Request a new OTP.",
+        message: "Invalid or expired OTP.",
       });
-    }
-
-    const otpRow = rows[0];
-
-    if (sha256(code) !== otpRow.code_hash) {
-      return res.status(401).json({ message: "Invalid OTP code." });
     }
 
     return res.status(200).json({
       message: "OTP verified. You may now reset your password.",
+      data: {
+        username: auth.username,
+        emailMasked: maskEmail(auth.email),
+      },
     });
   } catch (err: any) {
     if (err?.name === "ZodError") {
@@ -1239,12 +1546,11 @@ export const verifyPasswordResetOtp = async (req: Request, res: Response) => {
     console.error("verifyPasswordResetOtp error:", err);
     return res.status(500).json({
       message: "OTP verification failed",
-      error: err?.message,
+      error: err?.message ?? "Unknown error",
     });
   }
 };
 
-// reset password after OTP
 export const resetPassword = async (req: Request, res: Response) => {
   try {
     const passwordSchema = z
@@ -1253,57 +1559,64 @@ export const resetPassword = async (req: Request, res: Response) => {
       .regex(/[A-Z]/, "Password must include at least 1 uppercase letter")
       .regex(/[a-z]/, "Password must include at least 1 lowercase letter")
       .regex(/[0-9]/, "Password must include at least 1 number")
-      .regex(/[^A-Za-z0-9]/, "Password must include at least 1 special character");
+      .regex(
+        /[^A-Za-z0-9]/,
+        "Password must include at least 1 special character"
+      );
 
-    const schema = z.object({
-      email: z.string().email(),
-      code: z.string().length(6),
-      newPassword: passwordSchema,
-      confirmPassword: z.string().min(1),
-    }).strict().superRefine((data, ctx) => {
-      if (data.newPassword !== data.confirmPassword) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["confirmPassword"],
-          message: "Passwords do not match",
-        });
-      }
-    });
+    const schema = z
+      .object({
+        username: z.string().min(1),
+        code: z.string().length(6),
+        newPassword: passwordSchema,
+        confirmPassword: z.string().min(1),
+      })
+      .superRefine((data, ctx) => {
+        if (data.newPassword !== data.confirmPassword) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["confirmPassword"],
+            message: "Passwords do not match",
+          });
+        }
+      });
 
-    const { email, code, newPassword } = schema.parse(req.body);
-    const normalizedEmail = email.toLowerCase();
+    const parsed = schema.parse(req.body);
 
-    const auth = await getAuthAccountByEmail(normalizedEmail);
+    const auth = await getAuthAccountByIdentifier(parsed.username);
+
     if (!auth) {
-      return res.status(404).json({ message: "Account not found." });
+      return res.status(404).json({
+        message: "Account not found.",
+      });
     }
 
-    const rows = await mysqlQuery<any[]>(
+    const normalizedEmail = auth.email.toLowerCase();
+    const otpHash = sha256(parsed.code);
+
+    const rows = await mysqlQuery<EmailOtpRow[]>(
       `
-      SELECT *
+      SELECT id, email, purpose, code_hash, expires_at, consumed_at, created_at
       FROM email_otps
       WHERE email = ?
+        AND purpose = 'forgot_password'
+        AND code_hash = ?
         AND consumed_at IS NULL
         AND expires_at > NOW()
       ORDER BY id DESC
       LIMIT 1
       `,
-      [normalizedEmail]
+      [normalizedEmail, otpHash]
     );
 
     if (!rows.length) {
       return res.status(400).json({
-        message: "OTP expired or not found. Request a new OTP.",
+        message: "Invalid or expired OTP.",
       });
     }
 
     const otpRow = rows[0];
-
-    if (sha256(code) !== otpRow.code_hash) {
-      return res.status(401).json({ message: "Invalid OTP code." });
-    }
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const hashedPassword = await bcrypt.hash(parsed.newPassword, 10);
 
     if (auth.role === "customer") {
       await mysqlQuery(`UPDATE customer SET password = ? WHERE id = ?`, [
@@ -1328,7 +1641,11 @@ export const resetPassword = async (req: Request, res: Response) => {
     }
 
     await mysqlQuery(
-      `UPDATE email_otps SET consumed_at = NOW() WHERE id = ?`,
+      `
+      UPDATE email_otps
+      SET consumed_at = NOW()
+      WHERE id = ?
+      `,
       [otpRow.id]
     );
 
@@ -1348,7 +1665,7 @@ export const resetPassword = async (req: Request, res: Response) => {
     console.error("resetPassword error:", err);
     return res.status(500).json({
       message: "Password reset failed",
-      error: err?.message,
+      error: err?.message ?? "Unknown error",
     });
   }
 };

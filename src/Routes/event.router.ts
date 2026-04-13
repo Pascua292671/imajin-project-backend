@@ -10,10 +10,11 @@ import {
   listPublishedEvents,
   getEventById,
   deleteEvent,
+  getOrganizerDashboardSummary,
+  getOrganizerRecentOrders,
 } from "../Controller/EventController";
 
 import { requireAuth, requireRole } from "../middleware/auth.middleware";
-
 import { addTier, listTiers, deleteTier } from "../Controller/Tiercontroller";
 
 const router = Router();
@@ -25,13 +26,45 @@ const upload = multer({
   },
 });
 
-// EVENTS
+// PUBLIC
+router.get("/events/published", listPublishedEvents);
+
+// ORGANIZER DASHBOARD
+router.get(
+  "/events/dashboard/summary",
+  requireAuth,
+  requireRole("organizer"),
+  getOrganizerDashboardSummary
+);
+
+router.get(
+  "/events/dashboard/recent-orders",
+  requireAuth,
+  requireRole("organizer"),
+  getOrganizerRecentOrders
+);
+
+// ORGANIZER EVENTS
 router.post(
   "/events",
   requireAuth,
   requireRole("organizer"),
   upload.single("poster"),
-  createEvent,
+  createEvent
+);
+
+router.get(
+  "/events",
+  requireAuth,
+  requireRole("organizer"),
+  listEvents
+);
+
+router.get(
+  "/events/:id",
+  requireAuth,
+  requireRole("organizer"),
+  getEventById
 );
 
 router.put(
@@ -39,7 +72,7 @@ router.put(
   requireAuth,
   requireRole("organizer"),
   upload.single("poster"),
-  updateEvent,
+  updateEvent
 );
 
 router.patch(
@@ -47,58 +80,50 @@ router.patch(
   requireAuth,
   requireRole("organizer"),
   upload.single("poster"),
-  updateEvent,
+  updateEvent
 );
 
 router.patch(
   "/events/:id/publish",
   requireAuth,
   requireRole("organizer"),
-  publishEvent,
+  publishEvent
 );
 
 router.patch(
   "/events/:id/unpublish",
   requireAuth,
   requireRole("organizer"),
-  unpublishEvent,
+  unpublishEvent
 );
 
 router.delete(
   "/events/:id",
   requireAuth,
   requireRole("organizer"),
-  deleteEvent,
+  deleteEvent
 );
-
-router.get("/events", requireAuth, requireRole("organizer"), listEvents);
-
-// PUBLIC
-router.get("/events/published", listPublishedEvents);
-
-// ORGANIZER SINGLE EVENT
-router.get("/events/:id", requireAuth, requireRole("organizer"), getEventById);
 
 // TIERS
 router.get(
   "/events/:eventId/tiers",
   requireAuth,
   requireRole("organizer"),
-  listTiers,
+  listTiers
 );
 
 router.post(
   "/events/:eventId/tiers",
   requireAuth,
   requireRole("organizer"),
-  addTier,
+  addTier
 );
 
 router.delete(
   "/tiers/:tierId",
   requireAuth,
   requireRole("organizer"),
-  deleteTier,
+  deleteTier
 );
 
 export default router;

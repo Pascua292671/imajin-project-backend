@@ -11,6 +11,7 @@ import {
   me,
   googlePassportCallback,
 } from "../Controller/UserController";
+import { requireAuth, requireRole } from "../middleware/auth.middleware";
 
 const router = Router();
 
@@ -42,7 +43,7 @@ router.get(
 );
 
 // SESSION / CURRENT USER
-router.get("/me", me);
+router.get("/me", requireAuth, me);
 
 // LOGIN
 router.post("/login", loginUser);

@@ -25,7 +25,6 @@ const booleanLike = z.preprocess((value) => {
 
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
-
     if (normalized === "true" || normalized === "1") return true;
     if (normalized === "false" || normalized === "0") return false;
   }
@@ -35,13 +34,17 @@ const booleanLike = z.preprocess((value) => {
 
 const numberLikeNullable = z.preprocess((value) => {
   if (value === "" || value === null || value === undefined) return null;
+
   if (typeof value === "number") return value;
+
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed === "") return null;
+
     const parsed = Number(trimmed);
     return Number.isFinite(parsed) ? parsed : value;
   }
+
   return value;
 }, z.number().nullable());
 
@@ -65,7 +68,16 @@ const customerProfileSchema = z.object({
 });
 
 const artistProfileSchema = z.object({
+  stage_name: nullableTrimmedString,
   genre: nullableTrimmedString,
+  event_types: nullableTrimmedString,
+  performance_types: nullableTrimmedString,
+  travel_policy: nullableTrimmedString,
+  can_travel: booleanLike.optional(),
+  base_city: nullableTrimmedString,
+  availability_notes: nullableTrimmedString,
+  languages_supported: nullableTrimmedString,
+  performance_duration_options: nullableTrimmedString,
   bio: nullableTrimmedString,
   city: nullableTrimmedString,
   barangay: nullableTrimmedString,
@@ -80,8 +92,16 @@ const artistProfileSchema = z.object({
 
 const sessionistProfileSchema = z.object({
   display_name: nullableTrimmedString,
+  primary_instrument: nullableTrimmedString,
+  secondary_instruments: nullableTrimmedString,
   instruments: nullableTrimmedString,
   genre: nullableTrimmedString,
+  event_types: nullableTrimmedString,
+  travel_policy: nullableTrimmedString,
+  can_travel: booleanLike.optional(),
+  availability_notes: nullableTrimmedString,
+  languages_supported: nullableTrimmedString,
+  performance_duration_options: nullableTrimmedString,
   bio: nullableTrimmedString,
   city: nullableTrimmedString,
   barangay: nullableTrimmedString,
@@ -170,35 +190,58 @@ function getProfileTable(role: UserRole) {
 }
 
 function normalizeBooleanFieldsForDb(role: UserRole, profile: Record<string, any>) {
-  if (role !== "customer") return profile;
+  if (role === "customer") {
+    return {
+      ...profile,
+      receive_email_notifications:
+        profile.receive_email_notifications === undefined
+          ? undefined
+          : profile.receive_email_notifications
+          ? 1
+          : 0,
+      receive_sms_alerts:
+        profile.receive_sms_alerts === undefined
+          ? undefined
+          : profile.receive_sms_alerts
+          ? 1
+          : 0,
+    };
+  }
 
-  return {
-    ...profile,
-    receive_email_notifications:
-      profile.receive_email_notifications === undefined
-        ? undefined
-        : profile.receive_email_notifications
-        ? 1
-        : 0,
-    receive_sms_alerts:
-      profile.receive_sms_alerts === undefined
-        ? undefined
-        : profile.receive_sms_alerts
-        ? 1
-        : 0,
-  };
+  if (role === "artist" || role === "sessionist") {
+    return {
+      ...profile,
+      can_travel:
+        profile.can_travel === undefined
+          ? undefined
+          : profile.can_travel
+          ? 1
+          : 0,
+    };
+  }
+
+  return profile;
 }
 
 function normalizeProfileForResponse(role: UserRole, profile: any) {
   if (!profile) return null;
 
-  if (role !== "customer") return profile;
+  if (role === "customer") {
+    return {
+      ...profile,
+      receive_email_notifications: Boolean(profile.receive_email_notifications),
+      receive_sms_alerts: Boolean(profile.receive_sms_alerts),
+    };
+  }
 
-  return {
-    ...profile,
-    receive_email_notifications: Boolean(profile.receive_email_notifications),
-    receive_sms_alerts: Boolean(profile.receive_sms_alerts),
-  };
+  if (role === "artist" || role === "sessionist") {
+    return {
+      ...profile,
+      can_travel: Boolean(profile.can_travel),
+    };
+  }
+
+  return profile;
 }
 
 async function ensureProfileRowExists(userId: number, role: UserRole) {
@@ -338,6 +381,32 @@ async function getRoleProfile(role: UserRole, userId: number) {
   );
 
   return rows?.[0] ?? null;
+}
+
+async function syncArtistStageName(userId: number, stageName?: string | null) {
+  if (stageName === undefined) return;
+
+  await mysqlQuery(
+    `
+    UPDATE artist
+    SET Stage_name = ?
+    WHERE id = ?
+    `,
+    [stageName, userId]
+  );
+}
+
+async function syncSessionistStageName(userId: number, stageName?: string | null) {
+  if (stageName === undefined) return;
+
+  await mysqlQuery(
+    `
+    UPDATE sessionist
+    SET Stage_Name = ?
+    WHERE id = ?
+    `,
+    [stageName, userId]
+  );
 }
 
 async function updateBaseUser(
@@ -502,6 +571,8 @@ export async function upsertMyProfile(req: Request, res: Response) {
         artistProfileSchema.parse(rawProfile)
       );
 
+      const normalizedProfile = normalizeBooleanFieldsForDb(role, parsedProfile);
+
       const profileUpdate = buildUpdateQuery(
         "artist_profiles",
         "user_id",
@@ -512,12 +583,29 @@ export async function upsertMyProfile(req: Request, res: Response) {
       if (profileUpdate) {
         await mysqlQuery(profileUpdate.sql, profileUpdate.values);
       }
+
+      await syncArtistStageName(userId, parsedProfile.stage_name ?? null);
+
+      if (normalizedProfile !== parsedProfile) {
+        const booleanOnlyUpdate = buildUpdateQuery(
+          "artist_profiles",
+          "user_id",
+          userId,
+          { can_travel: normalizedProfile.can_travel }
+        );
+
+        if (booleanOnlyUpdate) {
+          await mysqlQuery(booleanOnlyUpdate.sql, booleanOnlyUpdate.values);
+        }
+      }
     }
 
     if (role === "sessionist") {
       const parsedProfile = normalizeEmptyStrings(
         sessionistProfileSchema.parse(rawProfile)
       );
+
+      const normalizedProfile = normalizeBooleanFieldsForDb(role, parsedProfile);
 
       const profileUpdate = buildUpdateQuery(
         "sessionist_profiles",
@@ -528,6 +616,21 @@ export async function upsertMyProfile(req: Request, res: Response) {
 
       if (profileUpdate) {
         await mysqlQuery(profileUpdate.sql, profileUpdate.values);
+      }
+
+      await syncSessionistStageName(userId, parsedProfile.display_name ?? null);
+
+      if (normalizedProfile !== parsedProfile) {
+        const booleanOnlyUpdate = buildUpdateQuery(
+          "sessionist_profiles",
+          "user_id",
+          userId,
+          { can_travel: normalizedProfile.can_travel }
+        );
+
+        if (booleanOnlyUpdate) {
+          await mysqlQuery(booleanOnlyUpdate.sql, booleanOnlyUpdate.values);
+        }
       }
     }
 

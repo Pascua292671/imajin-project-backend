@@ -4,3 +4,5 @@ dist
 build
 *.log
 coverage
+google-cloud-key.json
+weighty-works-489313-u6-ffc3c108628a.json

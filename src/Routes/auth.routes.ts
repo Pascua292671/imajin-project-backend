@@ -12,7 +12,8 @@ import {
   googlePassportCallback,
   resetPassword,
   verifyPasswordResetOtp,
-  requestPasswordResetOtp
+  requestPasswordResetOtp,
+  getPasswordResetAccount,
 } from "../Controller/UserController";
 import { requireAuth } from "../middleware/auth.middleware";
 
@@ -47,7 +48,7 @@ router.get(
   passport.authenticate("google", {
     scope: ["profile", "email"],
     session: true,
-    prompt:"select_account",
+    prompt: "select_account",
   })
 );
 
@@ -64,7 +65,11 @@ router.get("/me", requireAuth, me);
 
 // LOGOUT
 router.post("/logout", logoutUser);
+
+// FORGOT PASSWORD
+router.get("/forgot-password/account", getPasswordResetAccount);
 router.post("/forgot-password/request", requestPasswordResetOtp);
 router.post("/forgot-password/verify", verifyPasswordResetOtp);
 router.post("/forgot-password/reset", resetPassword);
+
 export default router;

@@ -16,12 +16,13 @@ import authRoutes from "./Routes/auth.routes";
 import profileroutes from "./Routes/profile.routes";
 import bookingRoutes from "./Routes/booking.routes";
 import ticketOrderRoutes from "./Routes/ticketOrder.routes";
-import ticketTierRoutes from "./Routes/ticketTier.routes"
-
-
-
-
-
+import ticketTierRoutes from "./Routes/ticketTier.routes";
+import ticketScanRoutes from "./Routes/ticketScan.routes";
+import ticketAttendanceRoutes from "./Routes/ticketAttendance.route";
+import paymentRouter from "./Routes/payment.router";
+import searchRoutes from "./Routes/search.routes";
+import promoCodeRoutes from "./Routes/promoCode.router";
+import availabilityRoutes from "./Routes/availability.routes";
 console.log("ENV LOADED:", {
   hasJwt: !!process.env.JWT_SECRET,
   smtpHost: process.env.SMTP_HOST,
@@ -34,8 +35,9 @@ console.log("ENV LOADED:", {
 console.log("GOOGLE_CLIENT_ID used:", process.env.GOOGLE_CLIENT_ID);
 
 const app = express();
-
-const FRONTEND_ORIGIN = "http://localhost:3000";
+const isProduction = process.env.NODE_ENV === "production";
+const FRONTEND_ORIGIN =
+  process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 
 app.use(
   cors({
@@ -46,7 +48,13 @@ app.use(
   })
 );
 
-app.options("*", cors({ origin: FRONTEND_ORIGIN, credentials: true }));
+app.options(
+  "*",
+  cors({
+    origin: FRONTEND_ORIGIN,
+    credentials: true,
+  })
+);
 
 app.use(cookieParser());
 app.use(express.json());
@@ -68,29 +76,32 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      sameSite: isProduction ? "none" : "lax",
+      secure: isProduction,
     },
   })
 );
 
-//booking
-app.use("/api/bookings", bookingRoutes);
-app.use("/api/ticket-orders", ticketOrderRoutes);
-app.use("/api/ticket-tiers",ticketTierRoutes);
-
-
-
 app.use(passport.initialize());
 app.use(passport.session());
-app.use("/api/auth", authRoutes);
 
-app.use ("/api/profile", profileroutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/profile", profileroutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/ticket-orders", ticketOrderRoutes);
+app.use("/api/payments", paymentRouter);
+app.use("/api/ticket-tiers", ticketTierRoutes);
+app.use("/api/tickets", ticketAttendanceRoutes);
+app.use("/api/tickets", ticketScanRoutes);
 app.use("/api/invitations", invitationRoutes);
 app.use("/api/mirror", mirrorRoutes);
 app.use("/api", eventRoutes);
 app.use("/api/public", publicProfileRoutes);
 app.use("/api/discover", discoverRoutes);
+app.use("/api/search", searchRoutes);
+app.use("/api/promo-codes", promoCodeRoutes);
+app.use("/api/availability", availabilityRoutes);
+
 
 app.use((req: Request, res: Response) => {
   res.status(404).json({

@@ -1,4 +1,5 @@
 import "express";
+import type { Multer } from "multer";
 
 export type UserRole = "customer" | "artist" | "sessionist" | "organizer";
 
@@ -14,10 +15,10 @@ declare global {
 
     interface Request {
       user?: User;
-      file?: Express.Multer.File;
+      file?: Multer.File;
       files?:
-        | Express.Multer.File[]
-        | { [fieldname: string]: Express.Multer.File[] };
+        | Multer.File[]
+        | { [fieldname: string]: Multer.File[] };
     }
   }
 }

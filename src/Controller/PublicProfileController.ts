@@ -5,6 +5,10 @@ function normalizeUsername(value: unknown) {
   return String(value || "").trim().toLowerCase();
 }
 
+function toBoolean(value: unknown) {
+  return value === 1 || value === true;
+}
+
 export async function getPublicArtistProfile(req: Request, res: Response) {
   try {
     const username = normalizeUsername(req.params.username);
@@ -20,10 +24,16 @@ export async function getPublicArtistProfile(req: Request, res: Response) {
         a.Full_name AS full_name,
         a.Stage_name AS stage_name,
         a.username,
-        a.email,
-        a.phone_no AS phone,
-        NULL AS user_profile_image_url,
+        ap.stage_name AS profile_stage_name,
         ap.genre,
+        ap.event_types,
+        ap.performance_types,
+        ap.travel_policy,
+        ap.can_travel,
+        ap.base_city,
+        ap.availability_notes,
+        ap.languages_supported,
+        ap.performance_duration_options,
         ap.bio,
         ap.city,
         ap.barangay,
@@ -46,9 +56,35 @@ export async function getPublicArtistProfile(req: Request, res: Response) {
       return res.status(404).json({ message: "Artist not found" });
     }
 
+    const row = rows[0];
+
     return res.status(200).json({
       role: "artist",
-      profile: rows[0],
+      profile: {
+        id: row.id,
+        full_name: row.full_name,
+        stage_name: row.profile_stage_name ?? row.stage_name ?? null,
+        username: row.username,
+        genre: row.genre,
+        event_types: row.event_types,
+        performance_types: row.performance_types,
+        travel_policy: row.travel_policy,
+        can_travel: toBoolean(row.can_travel),
+        base_city: row.base_city,
+        availability_notes: row.availability_notes,
+        languages_supported: row.languages_supported,
+        performance_duration_options: row.performance_duration_options,
+        bio: row.bio,
+        city: row.city,
+        barangay: row.barangay,
+        talent_fee: row.talent_fee,
+        facebook_url: row.facebook_url,
+        instagram_url: row.instagram_url,
+        youtube_url: row.youtube_url,
+        spotify_url: row.spotify_url,
+        profile_image_url: row.profile_image_url,
+        cover_image_url: row.cover_image_url,
+      },
     });
   } catch (error: any) {
     console.error("getPublicArtistProfile error:", error);
@@ -74,12 +110,17 @@ export async function getPublicSessionistProfile(req: Request, res: Response) {
         s.Full_name AS full_name,
         s.Stage_Name AS stage_name,
         s.username,
-        s.email,
-        s.phone_no AS phone,
-        NULL AS user_profile_image_url,
         sp.display_name,
+        sp.primary_instrument,
+        sp.secondary_instruments,
         sp.instruments,
         sp.genre,
+        sp.event_types,
+        sp.travel_policy,
+        sp.can_travel,
+        sp.availability_notes,
+        sp.languages_supported,
+        sp.performance_duration_options,
         sp.bio,
         sp.city,
         sp.barangay,
@@ -102,9 +143,37 @@ export async function getPublicSessionistProfile(req: Request, res: Response) {
       return res.status(404).json({ message: "Sessionist not found" });
     }
 
+    const row = rows[0];
+
     return res.status(200).json({
       role: "sessionist",
-      profile: rows[0],
+      profile: {
+        id: row.id,
+        full_name: row.full_name,
+        stage_name: row.stage_name,
+        display_name: row.display_name,
+        username: row.username,
+        primary_instrument: row.primary_instrument,
+        secondary_instruments: row.secondary_instruments,
+        instruments: row.instruments,
+        genre: row.genre,
+        event_types: row.event_types,
+        travel_policy: row.travel_policy,
+        can_travel: toBoolean(row.can_travel),
+        availability_notes: row.availability_notes,
+        languages_supported: row.languages_supported,
+        performance_duration_options: row.performance_duration_options,
+        bio: row.bio,
+        city: row.city,
+        barangay: row.barangay,
+        talent_fee: row.talent_fee,
+        experience_years: row.experience_years,
+        facebook_url: row.facebook_url,
+        instagram_url: row.instagram_url,
+        youtube_url: row.youtube_url,
+        profile_image_url: row.profile_image_url,
+        cover_image_url: row.cover_image_url,
+      },
     });
   } catch (error: any) {
     console.error("getPublicSessionistProfile error:", error);
@@ -129,17 +198,14 @@ export async function getPublicOrganizerProfile(req: Request, res: Response) {
         o.id,
         o.Organization_rep AS full_name,
         o.username,
-        o.email,
-        o.phone_no AS phone,
-        NULL AS user_profile_image_url,
         op.organizer_name,
         op.company_name,
         op.bio,
         op.city,
         op.barangay,
+        op.street_address,
         op.business_email,
         op.business_phone,
-        op.street_address,
         op.facebook_url,
         op.instagram_url,
         op.website_url,
@@ -157,9 +223,28 @@ export async function getPublicOrganizerProfile(req: Request, res: Response) {
       return res.status(404).json({ message: "Organizer not found" });
     }
 
+    const row = rows[0];
+
     return res.status(200).json({
       role: "organizer",
-      profile: rows[0],
+      profile: {
+        id: row.id,
+        full_name: row.full_name,
+        username: row.username,
+        organizer_name: row.organizer_name,
+        company_name: row.company_name,
+        bio: row.bio,
+        city: row.city,
+        barangay: row.barangay,
+        street_address: row.street_address,
+        business_email: row.business_email,
+        business_phone: row.business_phone,
+        facebook_url: row.facebook_url,
+        instagram_url: row.instagram_url,
+        website_url: row.website_url,
+        profile_image_url: row.profile_image_url,
+        cover_image_url: row.cover_image_url,
+      },
     });
   } catch (error: any) {
     console.error("getPublicOrganizerProfile error:", error);
@@ -184,9 +269,6 @@ export async function getPublicCustomerProfile(req: Request, res: Response) {
         c.id,
         c.name AS full_name,
         c.username,
-        c.email,
-        c.phone_no AS phone,
-        NULL AS user_profile_image_url,
         cp.nickname,
         cp.bio,
         cp.city,
@@ -207,9 +289,23 @@ export async function getPublicCustomerProfile(req: Request, res: Response) {
       return res.status(404).json({ message: "Customer not found" });
     }
 
+    const row = rows[0];
+
     return res.status(200).json({
       role: "customer",
-      profile: rows[0],
+      profile: {
+        id: row.id,
+        full_name: row.full_name,
+        username: row.username,
+        nickname: row.nickname,
+        bio: row.bio,
+        city: row.city,
+        barangay: row.barangay,
+        preferred_genre: row.preferred_genre,
+        timezone: row.timezone,
+        profile_image_url: row.profile_image_url,
+        cover_image_url: row.cover_image_url,
+      },
     });
   } catch (error: any) {
     console.error("getPublicCustomerProfile error:", error);
